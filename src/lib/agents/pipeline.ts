@@ -1,7 +1,8 @@
-import { queryOne, execute } from "@/lib/db";
+import { queryOne, execute, query } from "@/lib/db";
 import { invokeAgent } from "./engine";
 import { fetchWebContent } from "@/lib/mcp/fetch";
 import { chatCompletion } from "@/lib/deepseek";
+import { recordAnalysis, buildMemoryContext } from "./memory";
 import type { AgentRole, PipelineRun, PipelineMessage } from "@/types";
 
 const PIPELINE_FLOW: AgentRole[] = ["PM", "TechLead", "Dev", "QA", "Ops", "Data"];
@@ -12,12 +13,12 @@ const ROLE_CN: Record<AgentRole, string> = {
 };
 
 const ROLE_TASKS: Record<AgentRole, string> = {
-  PM: "从商业价值、用户需求、可行性角度分析，输出结构化建议。",
-  TechLead: "基于产品经理分析，评估技术架构可行性与复杂度。",
-  Dev: "基于技术评估，给出具体实现方案与工时估算。",
-  QA: "基于开发方案，列出测试重点与质量风险。",
-  Ops: "基于测试分析，给出部署与监控方案。",
-  Data: "基于全部分析，设计核心指标与埋点方案。",
+  PM: "从商业价值和用户需求角度，给出3-5条核心建议。",
+  TechLead: "评估技术可行性，给出3-5条架构建议。",
+  Dev: "给出3-5条具体实现方案和工时估算。",
+  QA: "列出3-5条关键测试点和质量风险。",
+  Ops: "给出3-5条部署和监控建议。",
+  Data: "给出3-5条核心指标和增长建议。",
 };
 
 export type PipelineProgressCallback = (event: {
@@ -48,7 +49,6 @@ export async function runPipelineWithProgress(
   );
   if (!product) throw new Error(`产品 ${productId} 不存在`);
 
-  // MCP Fetch
   let externalSummary = "";
   const urls = await extractUrls(inputPrompt);
   if (urls.length > 0) {
@@ -68,15 +68,13 @@ export async function runPipelineWithProgress(
   );
   const runId = insertResult.insertId;
 
-  const productContext = `## 产品信息\n- 名称: ${product.name}\n- PRD: ${product.prd || "无"}\n- 仓库: ${product.repo_url || "无"}\n- 状态: ${product.status}`;
-  if (externalSummary) productContext + `\n\n## MCP Fetch 外部数据\n${externalSummary}`;
+  const memoryCtx = await buildMemoryContext(productId);
+  let productContext = `## 产品信息\n- 名称: ${product.name}\n- PRD: ${product.prd || "无"}\n- 仓库: ${product.repo_url || "无"}\n- 状态: ${product.status}`;
+  if (memoryCtx) productContext += `\n\n## 历史上下文\n${memoryCtx}`;
+  if (externalSummary) productContext += `\n\n## MCP Fetch 外部数据\n${externalSummary}`;
 
   const messages: PipelineMessage[] = [];
   const total = PIPELINE_FLOW.length;
-
-  // ---- 阶段1: PM 先行 ----
-  const pmCtx = `${productContext}\n\n## 分析任务\n${inputPrompt}`;
-  const pmTask = `作为产品经理，${ROLE_TASKS.PM}`;
 
   onProgress?.({ type: "role_start", role: "PM", roleIndex: 0, totalRoles: total, progress: 5 });
 
@@ -84,7 +82,7 @@ export async function runPipelineWithProgress(
   let pmStructured: Record<string, unknown> | null = null;
 
   try {
-    const result = await invokeAgent("PM", pmCtx, pmTask);
+    const result = await invokeAgent("PM", `${productContext}\n\n## 分析任务\n${inputPrompt}`, `作为产品经理，${ROLE_TASKS.PM}`);
     pmContent = result.content;
     pmStructured = result.structured;
 
@@ -108,7 +106,6 @@ export async function runPipelineWithProgress(
     onProgress?.({ type: "role_error", role: "PM", roleIndex: 0, totalRoles: total, progress: 20, error: errMsg });
   }
 
-  // ---- 阶段2: TechLead + Dev + QA + Ops + Data 并行执行 ----
   const remainingRoles = PIPELINE_FLOW.slice(1);
   const parallelContext = `## 产品经理分析\n${pmContent.substring(0, 1500)}\n\n## 原始任务\n${inputPrompt}`;
 
@@ -160,14 +157,19 @@ export async function runPipelineWithProgress(
     if (r.status === "fulfilled") messages.push(r.value as PipelineMessage);
   }
 
-  // ---- 阶段3: 摘要 ----
+  for (const m of messages) {
+    if (!m.content.startsWith("[失败]")) {
+      recordAnalysis(productId, m.role, m.content.substring(0, 300)).catch(() => {});
+    }
+  }
+
   await execute("UPDATE pipeline_runs SET progress = 95, current_role = 'summary' WHERE id = ?", [runId]);
 
   let summary: string;
   try {
     const successMsgs = messages.filter((m) => !m.content.startsWith("[失败]"));
     summary = await chatCompletion(
-      "用中文总结关键发现（3-5句话），突出核心结论。",
+      "用中文总结关键发现（3-5句话），突出核心结论和行动建议。",
       `原始问题: ${inputPrompt}\n\n分析摘要:\n${successMsgs.map((m) => `[${m.role}] ${m.content.substring(0, 250)}`).join("\n")}`,
       { temperature: 0.4, maxTokens: 600 }
     );
@@ -178,7 +180,7 @@ export async function runPipelineWithProgress(
   onProgress?.({ type: "summary", progress: 95, summary });
 
   const failedCount = messages.filter(m => m.content.startsWith("[失败]")).length;
-  const finalStatus = failedCount === 0 ? "completed" : "failed";
+  const finalStatus = failedCount === 0 ? "completed" : (failedCount >= total ? "failed" : "completed");
 
   await execute(
     "UPDATE pipeline_runs SET status = ?, summary = ?, progress = 100, current_role = NULL, completed_at = NOW() WHERE id = ?",
@@ -192,7 +194,6 @@ export async function runPipelineWithProgress(
   return { run: run!, messages };
 }
 
-// 兼容旧接口
 export async function runPipeline(
   productId: number, inputPrompt: string, triggerType?: "manual" | "daily" | "event"
 ) {
@@ -202,7 +203,7 @@ export async function runPipeline(
 export async function getPipelineStatus(runId: number) {
   const run = await queryOne<PipelineRun>("SELECT * FROM pipeline_runs WHERE id = ?", [runId]);
   if (!run) return null;
-  const msgs = await queryOne<PipelineMessage[]>(
+  const msgs = await query<PipelineMessage>(
     "SELECT * FROM pipeline_messages WHERE pipeline_run_id = ? ORDER BY sequence", [runId]
   );
   return { run, messages: msgs || [] };

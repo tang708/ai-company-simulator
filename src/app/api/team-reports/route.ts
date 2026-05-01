@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { query, queryOne, execute } from "@/lib/db";
 import { runPipeline } from "@/lib/agents/pipeline";
 import { chatCompletion } from "@/lib/deepseek";
-import { buildMemoryContext, recordAnalysis } from "@/lib/agents/memory";
+import { buildMemoryContext } from "@/lib/agents/memory";
 import type { TeamReport } from "@/types";
 
 export async function GET(request: NextRequest) {
@@ -49,16 +49,10 @@ export async function POST(request: NextRequest) {
 
     for (const msg of pipelineResult.messages) {
       const col = roleMap[msg.role];
-      if (col) {
-        roleOutputs[col] = msg.content;
-        if (!msg.content.startsWith("[失败]")) {
-          recordAnalysis(Number(product_id), msg.role, msg.content.substring(0, 500)).catch(() => {});
-        }
-      }
+      if (col) roleOutputs[col] = msg.content;
     }
 
-    // 生成增强摘要：进度+变动+建议
-    const enhancedSummary = await generateEnhancedSummary(Number(product_id), pipelineResult.run.summary || "");
+    const enhancedSummary = await generateTeamSummary(Number(product_id), pipelineResult.run.summary || "", pipelineResult.messages.map(m => ({ role: m.role, content: m.content })));
 
     const result = await execute(
       `INSERT INTO team_reports (product_id, pm_output, tech_output, dev_output, qa_output, ops_output, data_output, summary, pipeline_run_id)
@@ -87,37 +81,34 @@ export async function POST(request: NextRequest) {
   }
 }
 
-async function generateEnhancedSummary(productId: number, pipelineSummary: string): Promise<string> {
+async function generateTeamSummary(productId: number, pipelineSummary: string, messages: { role: string; content: string }[]): Promise<string> {
   try {
-    const [product, tasks, prevReport] = await Promise.all([
+    const [product, tasks, prevReport, recentDailies] = await Promise.all([
       queryOne<{ name: string; status: string }>("SELECT name, status FROM products WHERE id = ?", [productId]),
-      query<{ title: string; status: string; updated_at: string }>(
-        "SELECT title, status, updated_at FROM tasks WHERE product_id = ? ORDER BY updated_at DESC LIMIT 10", [productId]
+      query<{ title: string; status: string }>(
+        "SELECT title, status FROM tasks WHERE product_id = ? ORDER BY updated_at DESC LIMIT 10", [productId]
       ),
-      queryOne<{ summary: string }>(
-        "SELECT summary FROM team_reports WHERE product_id = ? AND id < (SELECT MAX(id) FROM team_reports WHERE product_id = ?) ORDER BY id DESC LIMIT 1",
-        [productId, productId]
+      queryOne<{ summary: string; created_at: string }>(
+        "SELECT summary, created_at FROM team_reports WHERE product_id = ? ORDER BY created_at DESC LIMIT 1", [productId]
+      ),
+      query<{ content: string; created_at: string }>(
+        "SELECT content, created_at FROM daily_reports WHERE product_id = ? ORDER BY created_at DESC LIMIT 3", [productId]
       ),
     ]);
 
+    const statusLabel = product?.status === "idea" ? "构思中" : product?.status === "dev" ? "开发中" : "已上线";
     const taskSummary = tasks.length > 0
       ? tasks.map(t => `- ${t.status === "done" ? "✅" : "⏳"} ${t.title}`).join("\n")
       : "暂无任务";
-    const prevSummary = prevReport?.summary || "首次报告";
-    const statusLabel = product?.status === "idea" ? "构思中" : product?.status === "dev" ? "开发中" : "已上线";
+    const recentWork = recentDailies.length > 0
+      ? recentDailies.map(d => d.content.substring(0, 200)).join("\n---\n")
+      : "暂无近期日报";
 
-return `${pipelineSummary}
-
-## 📊 产品进度总结
-- 当前阶段：${statusLabel}
-- 任务进展：\n${taskSummary}
-
-## 📝 近期变动
-上一份报告摘要：${prevSummary}
-
-## 💡 优化建议
-基于各角色分析，团队识别出以下优化方向，建议优先实施高优先级和高价值项目。
-`;
+    return await chatCompletion(
+      "你是项目经理，生成一份简洁的团队报告摘要。严格按以下格式：\n\n## 📊 产品近况\n（当前状态、关键进展2-3句）\n\n## 👥 团队成果\n（各角色核心贡献，每角色1句）\n\n## 💡 优化建议\n（3-5条可操作的改进建议）",
+      `产品：${product?.name || "未知"} (${statusLabel})\n\nPipeline摘要：${pipelineSummary}\n\n任务进展：\n${taskSummary}\n\n近期日报：\n${recentWork}\n\n上次报告：${prevReport?.summary?.substring(0, 200) || "首次报告"}`,
+      { temperature: 0.4, maxTokens: 1200 }
+    );
   } catch {
     return pipelineSummary;
   }

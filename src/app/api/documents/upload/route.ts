@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
-import { query, execute, queryOne } from "@/lib/db";
+import { execute } from "@/lib/db";
+import { setMemory } from "@/lib/agents/memory";
 
 export async function POST(request: NextRequest) {
   try {
@@ -24,13 +25,11 @@ export async function POST(request: NextRequest) {
     if (fileName.endsWith(".txt") || fileName.endsWith(".md")) {
       text = buffer.toString("utf-8");
     } else if (fileName.endsWith(".docx")) {
-      // 简易 Word 解析：提取纯文本
       text = buffer.toString("utf-8")
         .replace(/[\x00-\x08\x0B\x0C\x0E-\x1F]/g, "")
         .replace(/[^\x20-\x7E\u4e00-\u9fff\u3000-\u303f\uff00-\uffef\n\r]/g, " ")
         .replace(/\s+/g, " ")
         .trim();
-      // 如果提取失败，使用 buffer 中的可读段
       if (text.length < 50) {
         text = buffer.toString("utf-8").replace(/[^\x20-\x7E\u4e00-\u9fff\u3000-\u303f\uff00-\uffef\n\r]/g, "");
         text = text.replace(/\s+/g, " ").trim().substring(0, 50000);
@@ -43,20 +42,14 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ success: false, error: "无法解析文档内容" }, { status: 400 });
     }
 
-    // 存入 product_memory 和更新产品 PRD
-    await execute(
-      "INSERT INTO product_memory (product_id, `key`, `value`) VALUES (?, 'uploaded_doc', ?) ON DUPLICATE KEY UPDATE `value` = ?, updated_at = NOW()",
-      [Number(productId), text, text]
-    );
-    await execute(
-      "INSERT INTO product_memory (product_id, `key`, `value`) VALUES (?, CONCAT('doc_upload_', NOW()), ?) ON DUPLICATE KEY UPDATE `value` = ?, updated_at = NOW()",
-      [Number(productId), text, text]
-    );
+    const pid = Number(productId);
 
-    // 自动更新产品 PRD
+    await setMemory(pid, "uploaded_doc", text.substring(0, 30000));
+    await setMemory(pid, `doc_${Date.now()}`, text.substring(0, 10000));
+
     await execute(
       "UPDATE products SET prd = CONCAT(IFNULL(prd,''), '\n\n--- 上传文档 ---\n', ?) WHERE id = ?",
-      [text.substring(0, 5000), Number(productId)]
+      [text.substring(0, 5000), pid]
     );
 
     return NextResponse.json({
