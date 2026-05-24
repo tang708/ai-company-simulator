@@ -1,7 +1,6 @@
 import os
-import os
 from dotenv import load_dotenv
-load_dotenv()
+load_dotenv('F:/jinAI/.env')
 from openai import OpenAI
 
 client = OpenAI(

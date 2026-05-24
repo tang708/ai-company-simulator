@@ -227,9 +227,14 @@ export default function ProductDetailPage() {
                     </button>
                   )}
                 </div>
-                <div style={{ background: "var(--bg-primary)", borderRadius: 8, padding: 14, fontSize: 13, lineHeight: 1.7, color: "var(--text-secondary)", whiteSpace: "pre-wrap" }}>
-                  {product.prd || "暂无PRD，可点击编辑添加或上传文档"}
-                </div>
+                <details style={{ background: "var(--bg-primary)", borderRadius: 8, border: "1px solid var(--border)" }}>
+                  <summary style={{ padding: "10px 14px", cursor: "pointer", fontSize: 13, fontWeight: 600, color: "var(--text-secondary)", userSelect: "none" }}>
+                    📄 产品需求文档 {product.prd ? `(${product.prd.length}字)` : "- 暂无"}
+                  </summary>
+                  <div style={{ padding: "0 14px 14px", fontSize: 13, lineHeight: 1.7, color: "var(--text-secondary)", whiteSpace: "pre-wrap", maxHeight: 300, overflowY: "auto" }}>
+                    {product.prd || "暂无PRD，可点击编辑添加或上传文档"}
+                  </div>
+                </details>
               </div>
               <div style={{ display: "flex", gap: 6, marginLeft: 16, flexShrink: 0 }}>
                 <button className="btn-secondary btn-sm" onClick={() => setEditMode(true)}>✏️ 编辑</button>

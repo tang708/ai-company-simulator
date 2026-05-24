@@ -21,6 +21,12 @@ const ROLE_TASKS: Record<AgentRole, string> = {
   Data: "给出3-5条核心指标和增长建议。",
 };
 
+async function getAgentId(role: string): Promise<number> {
+  const row = await queryOne<{ id: number }>("SELECT id FROM agents WHERE role = ?", [role]);
+  if (!row) throw new Error(`Agent ${role} 不存在`);
+  return row.id;
+}
+
 export type PipelineProgressCallback = (event: {
   type: "role_start" | "role_done" | "role_error" | "summary" | "complete";
   role?: AgentRole;
@@ -86,13 +92,14 @@ export async function runPipelineWithProgress(
     pmContent = result.content;
     pmStructured = result.structured;
 
+    const pmAgentId = await getAgentId("PM");
     const msgRes = await execute(
-      "INSERT INTO pipeline_messages (pipeline_run_id, agent_id, role, content, structured_output, sequence) VALUES (?, (SELECT id FROM agents WHERE role = 'PM'), 'PM', ?, ?, 1)",
-      [runId, pmContent, pmStructured ? JSON.stringify(pmStructured) : null]
+      "INSERT INTO pipeline_messages (pipeline_run_id, agent_id, role, content, structured_output, sequence) VALUES (?, ?, ?, ?, ?, 1)",
+      [runId, pmAgentId, "PM", pmContent, pmStructured ? JSON.stringify(pmStructured) : null]
     );
 
     messages.push({
-      id: msgRes.insertId, pipeline_run_id: runId, agent_id: 0, role: "PM",
+      id: msgRes.insertId, pipeline_run_id: runId, agent_id: pmAgentId, role: "PM",
       content: pmContent, structured_output: pmStructured ? JSON.stringify(pmStructured) : null,
       sequence: 1, created_at: new Date().toISOString(),
     });
@@ -101,13 +108,22 @@ export async function runPipelineWithProgress(
     onProgress?.({ type: "role_done", role: "PM", roleIndex: 0, totalRoles: total, progress: 20, content: pmContent, structured: pmStructured });
   } catch (err) {
     const errMsg = err instanceof Error ? err.message : "未知错误";
-    await execute("INSERT INTO pipeline_messages (pipeline_run_id, agent_id, role, content, sequence) VALUES (?, (SELECT id FROM agents WHERE role = 'PM'), 'PM', ?, 1)", [runId, `[失败] ${errMsg}`]);
+    const pmAgentId = await getAgentId("PM");
+    await execute(
+      "INSERT INTO pipeline_messages (pipeline_run_id, agent_id, role, content, sequence) VALUES (?, ?, ?, ?, 1)",
+      [runId, pmAgentId, "PM", `[失败] ${errMsg}`]
+    );
     await execute("UPDATE pipeline_runs SET progress = 20, current_role = 'PM' WHERE id = ?", [runId]);
     onProgress?.({ type: "role_error", role: "PM", roleIndex: 0, totalRoles: total, progress: 20, error: errMsg });
   }
 
   const remainingRoles = PIPELINE_FLOW.slice(1);
   const parallelContext = `## 产品经理分析\n${pmContent.substring(0, 1500)}\n\n## 原始任务\n${inputPrompt}`;
+
+  const agentIdCache: Record<string, number> = {};
+  for (const role of remainingRoles) {
+    agentIdCache[role] = await getAgentId(role);
+  }
 
   const parallelResults = await Promise.allSettled(
     remainingRoles.map(async (role, idx) => {
@@ -123,28 +139,30 @@ export async function runPipelineWithProgress(
         const task = `作为${ROLE_CN[role]}，${ROLE_TASKS[role]}`;
         const { content, structured } = await invokeAgent(role, ctx, task);
 
+        const agentId = agentIdCache[role];
         const msgRes = await execute(
-          "INSERT INTO pipeline_messages (pipeline_run_id, agent_id, role, content, structured_output, sequence) VALUES (?, (SELECT id FROM agents WHERE role = ?), ?, ?, ?, ?)",
-          [runId, role, role, content, structured ? JSON.stringify(structured) : null, seq]
+          "INSERT INTO pipeline_messages (pipeline_run_id, agent_id, role, content, structured_output, sequence) VALUES (?, ?, ?, ?, ?, ?)",
+          [runId, agentId, role, content, structured ? JSON.stringify(structured) : null, seq]
         );
 
         onProgress?.({ type: "role_done", role, roleIndex: realIdx, totalRoles: total, progress: progress + Math.round(70 / total), content, structured });
 
         return {
-          id: msgRes.insertId, pipeline_run_id: runId, agent_id: 0, role,
+          id: msgRes.insertId, pipeline_run_id: runId, agent_id: agentId, role,
           content, structured_output: structured ? JSON.stringify(structured) : null,
           sequence: seq, created_at: new Date().toISOString(),
           success: true,
         };
       } catch (err) {
         const errMsg = err instanceof Error ? err.message : "未知错误";
+        const agentId = agentIdCache[role];
         const msgRes = await execute(
-          "INSERT INTO pipeline_messages (pipeline_run_id, agent_id, role, content, sequence) VALUES (?, (SELECT id FROM agents WHERE role = ?), ?, ?, ?)",
-          [runId, role, role, `[失败] ${errMsg}`, seq]
+          "INSERT INTO pipeline_messages (pipeline_run_id, agent_id, role, content, sequence) VALUES (?, ?, ?, ?, ?)",
+          [runId, agentId, role, `[失败] ${errMsg}`, seq]
         );
         onProgress?.({ type: "role_error", role, roleIndex: realIdx, totalRoles: total, progress, error: errMsg });
         return {
-          id: msgRes.insertId, pipeline_run_id: runId, agent_id: 0, role,
+          id: msgRes.insertId, pipeline_run_id: runId, agent_id: agentId, role,
           content: `[失败] ${errMsg}`, structured_output: null,
           sequence: seq, created_at: new Date().toISOString(),
           success: false,

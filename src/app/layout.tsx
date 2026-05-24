@@ -10,7 +10,7 @@ const NAV_LINKS = [
   { href: "/", label: "控制台", emoji: "📊" },
   { href: "/products", label: "产品管理", emoji: "📦" },
   { href: "/team-reports", label: "团队报告", emoji: "📋" },
-  { href: "/daily-reports", label: "工作日报", emoji: "📝" },
+  { href: "/execution-logs", label: "执行记录", emoji: "📝" },
 ];
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {

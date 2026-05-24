@@ -16,7 +16,7 @@ const pool = mysql.createPool({
 export default pool;
 
 export async function query<T>(sql: string, params?: (string | number | boolean | null)[]): Promise<T[]> {
-  const [rows] = await pool.execute(sql, params);
+  const [rows] = await pool.query(sql, params);
   return rows as T[];
 }
 
@@ -25,7 +25,7 @@ export async function queryOne<T>(sql: string, params?: (string | number | boole
   return rows.length > 0 ? rows[0] : null;
 }
 
-export async function execute(sql: string, params?: (string | number | boolean | null)[]): Promise<mysql.ResultSetHeader> {
-  const [result] = await pool.execute(sql, params);
+export async function execute(sql: string, params?: (string | number | boolean | boolean | null)[]): Promise<mysql.ResultSetHeader> {
+  const [result] = await pool.query(sql, params);
   return result as mysql.ResultSetHeader;
 }

@@ -93,6 +93,7 @@ export interface TeamReport {
   ops_output: string | null;
   data_output: string | null;
   summary: string | null;
+  github_uploaded: number;
   pipeline_run_id: number | null;
   created_at: string;
 }
@@ -101,6 +102,7 @@ export interface DailyReport {
   id: number;
   product_id: number;
   content: string;
+  github_uploaded: number;
   created_at: string;
 }
 

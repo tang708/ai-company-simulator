@@ -83,7 +83,7 @@ export default function DashboardPage() {
         case "role_error": { const i = roles.findIndex(r => r.role === data.role); if (i >= 0) roles[i] = { ...roles[i], status: "error" }; return { ...prev, roles }; }
         case "summary": return { ...prev, summary: data.summary as string || prev.summary, percent: data.progress as number || prev.percent };
         case "complete": return { ...prev, percent: 100, summary: data.summary as string || prev.summary, done: true };
-        case "done": setToast(`✅ 「${prev.productName}」团队分析完成，日报已自动生成！`); loadData(); return prev;
+        case "done": setToast(`✅ 「${prev.productName}」团队分析完成，执行记录已自动生成！`); loadData(); return prev;
         case "error": setToast(`❌ ${data.message || ""}`); return { ...prev, done: true };
         default: return prev;
       }
@@ -108,7 +108,7 @@ export default function DashboardPage() {
       <div className="page-header">
         <h1>📊 控制台</h1>
         <div className="page-header-actions">
-          <span style={{ fontSize: 12, color: "var(--text-muted)" }}>{products.length} 产品 · {teamReports.length} 团队报告 · {dailyReports.length} 日报</span>
+          <span style={{ fontSize: 12, color: "var(--text-muted)" }}>{products.length} 产品 · {teamReports.length} 团队报告 · {dailyReports.length} 执行记录</span>
           <a href="/products" className="btn-primary btn-sm" style={{ textDecoration: "none" }}>+ 创建产品</a>
         </div>
       </div>
@@ -192,7 +192,7 @@ export default function DashboardPage() {
                   )}
                   {dailyRp && (
                     <div style={{ flex: 1, background: "var(--bg-primary)", borderRadius: 8, padding: "8px 12px", borderLeft: "3px solid var(--success)" }}>
-                      <div style={{ fontSize: 10, color: "var(--text-muted)", marginBottom: 4 }}>� 日报 · {new Date(dailyRp.created_at).toLocaleDateString("zh-CN")}</div>
+                      <div style={{ fontSize: 10, color: "var(--text-muted)", marginBottom: 4 }}>📝 执行记录 · {new Date(dailyRp.created_at).toLocaleDateString("zh-CN")}</div>
                       <div style={{ fontSize: 12, lineHeight: 1.5, color: "var(--text-secondary)", whiteSpace: "pre-wrap" }}>{dailyRp.content?.substring(0, 150)}</div>
                     </div>
                   )}
